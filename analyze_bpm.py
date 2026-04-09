@@ -3,94 +3,86 @@ import mediapipe as mp
 import numpy as np
 import time
 from scipy.signal import find_peaks
+
+# EXACT IMPORTS FROM YOUR DOCUMENTATION
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 def analyze_live():
-    # Setup for Lite model for better performance on MacBook M2
+    # SETUP OPTIONS
+    # Ensure you use 'pose_landmarker_lite.task' or 'pose_landmarker.task'
     base_options = python.BaseOptions(model_asset_path='pose_landmarker_lite.task')
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=vision.RunningMode.VIDEO
     )
 
+    # CREATE THE TASK
     with vision.PoseLandmarker.create_from_options(options) as landmarker:
         cap = cv2.VideoCapture("input_video.mp4")
-        
-        # --- GET ACTUAL FPS FROM VIDEO ---
         fps = cap.get(cv2.CAP_PROP_FPS)
-        
-        # Fallback if the video file has weird metadata
-        if fps <= 0:
-            fps = 30.0
+        if fps <= 0: fps = 30.0
             
-        # Calculate ideal time per frame in milliseconds
         frame_delay = int(1000 / fps)
-        
         y_values = []
         frame_count = 0
         process_every_n_frames = 2 
         bpm = 0
 
-        print(f"Detected Video FPS: {fps}")
-        print(f"Target playback delay: {frame_delay}ms")
-
         while cap.isOpened():
-            start_time = time.time() # Track start of frame processing
-            
+            start_time = time.time()
             success, frame = cap.read()
-            if not success:
-                break
+            if not success: break
 
             frame_count += 1
+            h, w, _ = frame.shape
 
-            # Only process specific frames to keep playback smooth
             if frame_count % process_every_n_frames == 0:
+                # PREPARE DATA (Converted to MediaPipe Image object)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                 
-                # Calculate timestamp based on frame count rather than metadata for consistency
+                # RUN THE TASK (With timestamp as required by documentation)
                 timestamp_ms = int((frame_count / fps) * 1000)
-                
                 result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
-                if result.pose_landmarks and len(result.pose_landmarks) > 0:
-                    # landmark[0][0] is the Nose
-                    nose = result.pose_landmarks[0][0] 
-                    y_values.append(1 - nose.y)
+                # HANDLE AND DISPLAY RESULTS
+                if result.pose_landmarks:
+                    for pose in result.pose_landmarks:
+                        # Draw dots on every detected landmark to visualize tracking
+                        for landmark in pose:
+                            px, py = int(landmark.x * w), int(landmark.y * h)
+                            cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
-                    # Calculate BPM using the actual FPS from the file
-                    # We need at least 2 seconds of tracked data
-                    min_samples = int((fps / process_every_n_frames) * 2)
-                    if len(y_values) > min_samples:
-                        # Find peaks with a distance constraint based on FPS
-                        peaks, _ = find_peaks(y_values, distance=fps/8, prominence=0.01)
+                        # TRACKING FOR BPM (Using Landmark #0: Nose)
+                        nose = pose[0]
+                        cv2.circle(frame, (int(nose.x * w), int(nose.y * h)), 8, (0, 0, 255), cv2.FILLED)
                         
-                        # duration = samples / (samples per second)
-                        duration = len(y_values) / (fps / process_every_n_frames)
-                        bpm = (len(peaks) / duration) * 60
+                        y_pos = 1 - nose.y
+                        y_values.append(y_pos)
 
-            # UI Overlay
+                        min_samples = int((fps / process_every_n_frames) * 2)
+                        if len(y_values) > min_samples:
+                            peaks, _ = find_peaks(y_values, distance=fps/8, prominence=0.01)
+                            duration = len(y_values) / (fps / process_every_n_frames)
+                            bpm = (len(peaks) / duration) * 60
+
+            # UI OVERLAY
             cv2.rectangle(frame, (10, 10), (350, 80), (0, 0, 0), -1)
             cv2.putText(frame, f"LIVE BPM: {int(bpm)}", (30, 60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
             
-            cv2.imshow('BPM Tracker - Natural Speed', frame)
+            cv2.imshow('BPM Tracker - Documentation Compliant', frame)
 
-            # --- DYNAMIC DELAY CALCULATION ---
-            # Calculate how long the processing (AI + Drawing) actually took
+            # DYNAMIC DELAY
             elapsed_ms = int((time.time() - start_time) * 1000)
-            
-            # The wait time is (target delay) - (time already spent)
             actual_delay = max(1, frame_delay - elapsed_ms)
 
             if cv2.waitKey(actual_delay) & 0xFF == ord('q'): 
                 break
 
-        cap.release()
-        cv2.destroyAllWindows()
-        # Ensure macOS window cleanup
-        for i in range(5):
-            cv2.waitKey(1)
+    cap.release()
+    cv2.destroyAllWindows()
+    for i in range(5): cv2.waitKey(1)
 
 if __name__ == "__main__":
     analyze_live()
