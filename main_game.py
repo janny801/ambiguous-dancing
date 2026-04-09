@@ -42,8 +42,8 @@ def audio_thread_function():
 
             o_env = onset_strength(y=audio_data, sr=RATE)
             peak_intensity = np.max(o_env)
-            
-            if peak_intensity > 3.0: 
+             
+            if peak_intensity > 3.0:  # live bpm sensitivity modifier
                 now = time.time()
                 if (now - last_onset) > 0.25:
                     if last_onset > 0:
@@ -54,7 +54,7 @@ def audio_thread_function():
                             mic_bpm = int(60 / np.mean(intervals))
                     last_onset = now
             
-            if time.time() - last_onset > 2.0:
+            if time.time() - last_onset > 0.5:
                 mic_bpm = 0
                 intervals = []
                 
@@ -126,7 +126,7 @@ def analyze_game():
 
                 # 2. Every 2 Seconds: Evaluate the Match
                 current_time = time.time()
-                if current_time - last_check_time >= 2.0:
+                if current_time - last_check_time >= 0.5:
                     is_matching = (abs(video_audio_bpm - mic_bpm) <= 10 and video_audio_bpm > 0)
                     last_check_time = current_time
 
