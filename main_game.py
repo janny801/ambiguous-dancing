@@ -56,17 +56,14 @@ def audio_thread_function():
 def analyze_game():
     global mic_bpm, current_volume, video_audio_bpm, global_timestamp_ms
     
-    # Pre-initialize mixer to avoid SDL conflicts
-    pygame.mixer.pre_init(44100, -16, 2, 512)
+    # Initialize Audio
     pygame.mixer.init()
-    
     threading.Thread(target=audio_thread_function, daemon=True).start()
 
     video_folder = "videos"
     video_files = sorted([f for f in os.listdir(video_folder) if f.endswith('.mp4')])
     current_idx = 0
 
-    # FIX: Use the imported classes directly to avoid the AttributeError
     base_options = python.BaseOptions(model_asset_path='pose_landmarker_lite.task')
     options = vision.PoseLandmarkerOptions(
         base_options=base_options, 
@@ -77,23 +74,26 @@ def analyze_game():
         while True: 
             video_path = os.path.join(video_folder, video_files[current_idx])
             
-            # Use 'ffmpeg' as the primary decoder to solve the PySoundFile warning
+            # Load Audio features
             y_video, sr = librosa.load(video_path, sr=22050)
             full_onset_env = onset_strength(y=y_video, sr=sr)
             
+            # Start Music Playback
             pygame.mixer.music.load(video_path)
             pygame.mixer.music.play(-1)
+            
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            frame_delay = int(1000 / fps)
             
             while cap.isOpened():
-                start_loop = time.time()
                 success, frame = cap.read()
+                
+                # If video ends, loop it and rewind music
                 if not success:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     pygame.mixer.music.rewind()
-                    success, frame = cap.read()
-                    if not success: break
+                    continue
 
                 curr_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
                 global_timestamp_ms += int(1000 / fps)
@@ -102,12 +102,11 @@ def analyze_game():
                 # Lively Audio BPM
                 audio_idx = int((curr_frame / fps) * (sr / 512))
                 window = full_onset_env[max(0, audio_idx-50):audio_idx+1]
-                
                 if len(window) > 10:
                     t, _ = librosa.beat.beat_track(onset_envelope=window, sr=sr)
                     video_audio_bpm = int(t[0]) if isinstance(t, np.ndarray) else int(t)
 
-                # Nose tracking for visualization
+                # MediaPipe Visualization (Every 2nd frame)
                 if int(curr_frame) % 2 == 0:
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                     res = landmarker.detect_for_video(mp_image, global_timestamp_ms)
@@ -130,15 +129,24 @@ def analyze_game():
 
                 cv2.imshow('Rhythm Game', frame)
                 
-                k = cv2.waitKey(1) & 0xFF
-                if k == ord('q'): return
-                elif k in [2, 3, ord('n'), ord('p')]:
-                    if k in [3, ord('n')]: current_idx = (current_idx + 1) % len(video_files)
-                    else: current_idx = (current_idx - 1) % len(video_files)
+                # --- RESTORED CONTROLS ---
+                # waitKey is critical for video playback and key detection
+                key = cv2.waitKey(1) & 0xFF
+                
+                if key == ord('q'):
+                    pygame.mixer.music.stop()
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    return
+                elif key == 3 or key == ord('n'): # Right Arrow or 'N'
+                    current_idx = (current_idx + 1) % len(video_files)
+                    pygame.mixer.music.stop()
+                    break
+                elif key == 2 or key == ord('p'): # Left Arrow or 'P'
+                    current_idx = (current_idx - 1) % len(video_files)
                     pygame.mixer.music.stop()
                     break
 
-                time.sleep(max(0, (1/fps) - (time.time() - start_loop)))
             cap.release()
 
 if __name__ == "__main__":
