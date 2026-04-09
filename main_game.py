@@ -127,36 +127,39 @@ def analyze_game():
                 # 2. Every 2 Seconds: Evaluate the Match
                 current_time = time.time()
                 if current_time - last_check_time >= 2.0:
-                    # Check if within 10 BPM margin
-                    if abs(video_audio_bpm - mic_bpm) <= 10 and video_audio_bpm > 0:
-                        is_matching = True
-                    else:
-                        is_matching = False
+                    is_matching = (abs(video_audio_bpm - mic_bpm) <= 10 and video_audio_bpm > 0)
                     last_check_time = current_time
 
-                # 3. Update Streak and Progressive Green Effect
+                # 3. Update Streak 
                 if is_matching:
                     match_streak = min(match_streak + 1, 150)
                 else:
                     match_streak = max(0, match_streak - 3)
 
-                # 4. Render Matching Effect
-                if match_streak >= STREAK_THRESHOLD:
+                # 4. Render Matching & Locked In Effects
+                if is_matching:
+                    # Apply green overlay
                     overlay = frame.copy()
-                    alpha = min(0.4, (match_streak / 150) * 0.4)
-                    overlay[:] = (0, 255, 0)
+                    # Alpha builds from 0.1 up to 0.4 intensity
+                    alpha = max(0.1, min(0.4, (match_streak / 150) * 0.4))
+                    overlay[:] = (0, 255, 0) # Green
                     cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-                    
-                    text = "MATCHING"
-                    font = cv2.FONT_HERSHEY_TRIPLEX
-                    font_scale = 1.5
-                    thickness = 3
-                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                    text_x = (w - text_size[0]) // 2
-                    text_y = (h + text_size[1]) // 2
-                    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
 
-                # MediaPipe Visualization
+                    # Same format for both states
+                    text = "LOCKED IN!" if match_streak >= STREAK_THRESHOLD else "MATCHING"
+                    
+                    font = cv2.FONT_HERSHEY_TRIPLEX
+                    scale = 1.5
+                    thick = 4 # Bold for visibility
+                    color = (255, 255, 255) # Pure white
+                    
+                    # Center text
+                    tsize = cv2.getTextSize(text, font, scale, thick)[0]
+                    tx = (w - tsize[0]) // 2
+                    ty = (h + tsize[1]) // 2
+                    cv2.putText(frame, text, (tx, ty), font, scale, color, thick)
+
+                # MediaPipe Visualization (Visual Dot only)
                 if int(curr_frame) % 2 == 0:
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                     res = landmarker.detect_for_video(mp_image, global_timestamp_ms)
