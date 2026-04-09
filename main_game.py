@@ -6,7 +6,7 @@ import threading
 import pyaudio
 import librosa
 import os
-import subprocess # NEW: To run native macOS afplay
+import subprocess 
 from librosa.onset import onset_strength
 from librosa.beat import beat_track
 
@@ -19,7 +19,7 @@ mic_bpm = 0
 current_volume = 0
 video_audio_bpm = 0 
 global_timestamp_ms = 0 
-audio_process = None # To track the afplay process
+audio_process = None 
 
 def audio_thread_function():
     global mic_bpm, current_volume
@@ -37,34 +37,23 @@ def audio_thread_function():
         while True:
             data = stream.read(CHUNK, exception_on_overflow=False)
             audio_data = np.frombuffer(data, dtype=np.float32)
-            
-            # 1. Volume visualization scaling
             rms = np.sqrt(np.mean(audio_data**2))
             current_volume = min(1.0, rms * 12) 
 
-            # 2. Onset Detection
             o_env = onset_strength(y=audio_data, sr=RATE)
             peak_intensity = np.max(o_env)
             
-            # ADJUST THIS: 3.5 is a middle ground. 
-            # If still 0, try 3.0. If still too high, try 4.0.
             if peak_intensity > 3.0: 
                 now = time.time()
-                
-                # Debounce: Ignore sounds that happen within 0.25s of each other
-                # (prevents one clap from being counted twice)
                 if (now - last_onset) > 0.25:
                     if last_onset > 0:
                         diff = now - last_onset
-                        # Standard human rhythm window (40 to 200 BPM)
                         if 0.3 < diff < 1.5:
                             intervals.append(diff)
                             if len(intervals) > 5: intervals.pop(0)
                             mic_bpm = int(60 / np.mean(intervals))
-                    
                     last_onset = now
             
-            # Reset if quiet for 2 seconds
             if time.time() - last_onset > 2.0:
                 mic_bpm = 0
                 intervals = []
@@ -72,19 +61,15 @@ def audio_thread_function():
     except: pass
     finally: p.terminate()
 
-
 def stop_audio():
-    """Stops the current macOS audio process."""
     global audio_process
     if audio_process:
         audio_process.terminate()
         audio_process = None
 
 def play_audio(path):
-    """Starts playing audio using macOS native afplay."""
     global audio_process
     stop_audio()
-    # afplay is a native macOS command that plays audio from files
     audio_process = subprocess.Popen(["afplay", path])
 
 def analyze_game():
@@ -105,38 +90,73 @@ def analyze_game():
     with vision.PoseLandmarker.create_from_options(options) as landmarker:
         while True: 
             video_path = os.path.join(video_folder, video_files[current_idx])
-            
-            # 1. LOAD AUDIO FEATURES (LIVELY BPM)
             y_video, sr = librosa.load(video_path, sr=22050)
             full_onset_env = onset_strength(y=y_video, sr=sr)
             
-            # 2. START NATIVE AUDIO
             play_audio(video_path)
-            
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             
+            # --- STREAK & TIMING TRACKER ---
+            match_streak = 0 
+            STREAK_THRESHOLD = 90 # 3 seconds @ 30fps
+            last_check_time = time.time()
+            is_matching = False
+
             while cap.isOpened():
                 start_loop = time.time()
                 success, frame = cap.read()
                 
                 if not success:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    play_audio(video_path) # Restart audio for loop
+                    play_audio(video_path)
+                    match_streak = 0 
                     continue
 
                 curr_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
                 global_timestamp_ms += int(1000 / fps)
                 h, w, _ = frame.shape
 
-                # Lively Audio BPM
+                # 1. Lively Audio BPM Analysis
                 audio_idx = int((curr_frame / fps) * (sr / 512))
                 window = full_onset_env[max(0, audio_idx-50):audio_idx+1]
                 if len(window) > 10:
                     t, _ = librosa.beat.beat_track(onset_envelope=window, sr=sr)
                     video_audio_bpm = int(t[0]) if isinstance(t, np.ndarray) else int(t)
 
-                # Visualization
+                # 2. Every 2 Seconds: Evaluate the Match
+                current_time = time.time()
+                if current_time - last_check_time >= 2.0:
+                    # Check if within 10 BPM margin
+                    if abs(video_audio_bpm - mic_bpm) <= 10 and video_audio_bpm > 0:
+                        is_matching = True
+                    else:
+                        is_matching = False
+                    last_check_time = current_time
+
+                # 3. Update Streak and Progressive Green Effect
+                if is_matching:
+                    match_streak = min(match_streak + 1, 150)
+                else:
+                    match_streak = max(0, match_streak - 3)
+
+                # 4. Render Matching Effect
+                if match_streak >= STREAK_THRESHOLD:
+                    overlay = frame.copy()
+                    alpha = min(0.4, (match_streak / 150) * 0.4)
+                    overlay[:] = (0, 255, 0)
+                    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
+                    
+                    text = "MATCHING"
+                    font = cv2.FONT_HERSHEY_TRIPLEX
+                    font_scale = 1.5
+                    thickness = 3
+                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                    text_x = (w - text_size[0]) // 2
+                    text_y = (h + text_size[1]) // 2
+                    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
+
+                # MediaPipe Visualization
                 if int(curr_frame) % 2 == 0:
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                     res = landmarker.detect_for_video(mp_image, global_timestamp_ms)
@@ -144,7 +164,7 @@ def analyze_game():
                         n = res.pose_landmarks[0][0]
                         cv2.circle(frame, (int(n.x*w), int(n.y*h)), 8, (0,0,255), -1)
 
-                # UI
+                # UI OVERLAY
                 cv2.rectangle(frame, (10, 10), (420, 160), (0, 0, 0), -1)
                 cv2.putText(frame, f"REEL: {video_files[current_idx]}", (20, 45), 2, 0.7, (255,255,255), 2)
                 cv2.putText(frame, f"LIVE SONG BPM: {video_audio_bpm}", (20, 85), 2, 0.8, (255,255,255), 2)
@@ -154,26 +174,20 @@ def analyze_game():
                 cv2.rectangle(frame, (50, h-50), (w-50, h-30), (50,50,50), -1)
                 cv2.rectangle(frame, (50, h-50), (50+vol_w, h-30), (0,255,0), -1)
 
-                if abs(video_audio_bpm - mic_bpm) < 10 and video_audio_bpm > 0:
-                    cv2.putText(frame, "LOCKED IN!", (w//2-120, h//2), 2, 1.5, (0,255,0), 4)
-
                 cv2.imshow('Rhythm Game', frame)
                 
-                # CONTROLS
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
                     stop_audio()
                     cap.release()
                     cv2.destroyAllWindows()
                     return
-                elif key == 3 or key == ord('n'): # Right
+                elif key == 3 or key == ord('n'):
                     current_idx = (current_idx + 1) % len(video_files)
-                    stop_audio()
-                    break
-                elif key == 2 or key == ord('p'): # Left
+                    stop_audio(); break
+                elif key == 2 or key == ord('p'):
                     current_idx = (current_idx - 1) % len(video_files)
-                    stop_audio()
-                    break
+                    stop_audio(); break
 
                 elapsed = time.time() - start_loop
                 if elapsed < (1/fps):
