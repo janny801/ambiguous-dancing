@@ -43,7 +43,7 @@ def audio_thread_function():
             o_env = onset_strength(y=audio_data, sr=RATE)
             peak_intensity = np.max(o_env)
              
-            if peak_intensity > 3.0:  # live bpm sensitivity modifier
+            if peak_intensity > 2.5:  # live bpm sensitivity modifier
                 now = time.time()
                 if (now - last_onset) > 0.25:
                     if last_onset > 0:
