@@ -10,7 +10,6 @@ from mediapipe.tasks.python import vision
 
 def analyze_live():
     # SETUP OPTIONS
-    # Ensure you use 'pose_landmarker_lite.task' or 'pose_landmarker.task'
     base_options = python.BaseOptions(model_asset_path='pose_landmarker_lite.task')
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
@@ -25,40 +24,60 @@ def analyze_live():
             
         frame_delay = int(1000 / fps)
         y_values = []
-        frame_count = 0
+        
+        # We need two counters:
+        # 1. Internal frame count (resets on loop)
+        # 2. Cumulative frame count (never resets, used for MediaPipe timestamps)
+        internal_frame_count = 0 
+        cumulative_frame_count = 0 
+        
         process_every_n_frames = 2 
         bpm = 0
 
         while cap.isOpened():
             start_time = time.time()
             success, frame = cap.read()
-            if not success: break
+            
+            # --- LOOP LOGIC ---
+            if not success:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                internal_frame_count = 0
+                # Note: We do NOT reset cumulative_frame_count or y_values here
+                # so the BPM stays consistent and the timestamp keeps increasing.
+                success, frame = cap.read()
+                if not success: break
+            # ------------------
 
-            frame_count += 1
+            internal_frame_count += 1
+            cumulative_frame_count += 1
             h, w, _ = frame.shape
 
-            if frame_count % process_every_n_frames == 0:
-                # PREPARE DATA (Converted to MediaPipe Image object)
+            if internal_frame_count % process_every_n_frames == 0:
+                # PREPARE DATA
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                 
-                # RUN THE TASK (With timestamp as required by documentation)
-                timestamp_ms = int((frame_count / fps) * 1000)
+                # FIX: Use cumulative_frame_count so timestamp always increases
+                timestamp_ms = int((cumulative_frame_count / fps) * 1000)
+                
                 result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
                 # HANDLE AND DISPLAY RESULTS
                 if result.pose_landmarks:
                     for pose in result.pose_landmarks:
-                        # Draw dots on every detected landmark to visualize tracking
                         for landmark in pose:
                             px, py = int(landmark.x * w), int(landmark.y * h)
                             cv2.circle(frame, (px, py), 2, (0, 255, 0), -1)
 
-                        # TRACKING FOR BPM (Using Landmark #0: Nose)
                         nose = pose[0]
                         cv2.circle(frame, (int(nose.x * w), int(nose.y * h)), 8, (0, 0, 255), cv2.FILLED)
                         
                         y_pos = 1 - nose.y
                         y_values.append(y_pos)
+
+                        # Maintain a sliding window of the last 150 samples (~10 seconds)
+                        # to keep the BPM calculation relevant to the current movement
+                        if len(y_values) > 150:
+                            y_values.pop(0)
 
                         min_samples = int((fps / process_every_n_frames) * 2)
                         if len(y_values) > min_samples:
@@ -71,7 +90,7 @@ def analyze_live():
             cv2.putText(frame, f"LIVE BPM: {int(bpm)}", (30, 60), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
             
-            cv2.imshow('BPM Tracker - Documentation Compliant', frame)
+            cv2.imshow('BPM Tracker - Looping Enabled', frame)
 
             # DYNAMIC DELAY
             elapsed_ms = int((time.time() - start_time) * 1000)
