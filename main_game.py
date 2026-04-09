@@ -6,11 +6,11 @@ import threading
 import pyaudio
 import librosa
 import os
-import pygame
+import subprocess # NEW: To run native macOS afplay
 from librosa.onset import onset_strength
 from librosa.beat import beat_track
 
-# Use specific imports to avoid the 'AttributeError'
+# MediaPipe Imports
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
@@ -19,8 +19,10 @@ mic_bpm = 0
 current_volume = 0
 video_audio_bpm = 0 
 global_timestamp_ms = 0 
+audio_process = None # To track the afplay process
 
 def audio_thread_function():
+    """Background thread for Microphone input."""
     global mic_bpm, current_volume
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
@@ -53,11 +55,23 @@ def audio_thread_function():
     except: pass
     finally: p.terminate()
 
+def stop_audio():
+    """Stops the current macOS audio process."""
+    global audio_process
+    if audio_process:
+        audio_process.terminate()
+        audio_process = None
+
+def play_audio(path):
+    """Starts playing audio using macOS native afplay."""
+    global audio_process
+    stop_audio()
+    # afplay is a native macOS command that plays audio from files
+    audio_process = subprocess.Popen(["afplay", path])
+
 def analyze_game():
     global mic_bpm, current_volume, video_audio_bpm, global_timestamp_ms
     
-    # Initialize Audio
-    pygame.mixer.init()
     threading.Thread(target=audio_thread_function, daemon=True).start()
 
     video_folder = "videos"
@@ -74,25 +88,23 @@ def analyze_game():
         while True: 
             video_path = os.path.join(video_folder, video_files[current_idx])
             
-            # Load Audio features
+            # 1. LOAD AUDIO FEATURES (LIVELY BPM)
             y_video, sr = librosa.load(video_path, sr=22050)
             full_onset_env = onset_strength(y=y_video, sr=sr)
             
-            # Start Music Playback
-            pygame.mixer.music.load(video_path)
-            pygame.mixer.music.play(-1)
+            # 2. START NATIVE AUDIO
+            play_audio(video_path)
             
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            frame_delay = int(1000 / fps)
             
             while cap.isOpened():
+                start_loop = time.time()
                 success, frame = cap.read()
                 
-                # If video ends, loop it and rewind music
                 if not success:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    pygame.mixer.music.rewind()
+                    play_audio(video_path) # Restart audio for loop
                     continue
 
                 curr_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
@@ -106,7 +118,7 @@ def analyze_game():
                     t, _ = librosa.beat.beat_track(onset_envelope=window, sr=sr)
                     video_audio_bpm = int(t[0]) if isinstance(t, np.ndarray) else int(t)
 
-                # MediaPipe Visualization (Every 2nd frame)
+                # Visualization
                 if int(curr_frame) % 2 == 0:
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                     res = landmarker.detect_for_video(mp_image, global_timestamp_ms)
@@ -129,23 +141,25 @@ def analyze_game():
 
                 cv2.imshow('Rhythm Game', frame)
                 
-                # --- RESTORED CONTROLS ---
-                # waitKey is critical for video playback and key detection
+                # CONTROLS
                 key = cv2.waitKey(1) & 0xFF
-                
                 if key == ord('q'):
-                    pygame.mixer.music.stop()
+                    stop_audio()
                     cap.release()
                     cv2.destroyAllWindows()
                     return
-                elif key == 3 or key == ord('n'): # Right Arrow or 'N'
+                elif key == 3 or key == ord('n'): # Right
                     current_idx = (current_idx + 1) % len(video_files)
-                    pygame.mixer.music.stop()
+                    stop_audio()
                     break
-                elif key == 2 or key == ord('p'): # Left Arrow or 'P'
+                elif key == 2 or key == ord('p'): # Left
                     current_idx = (current_idx - 1) % len(video_files)
-                    pygame.mixer.music.stop()
+                    stop_audio()
                     break
+
+                elapsed = time.time() - start_loop
+                if elapsed < (1/fps):
+                    time.sleep((1/fps) - elapsed)
 
             cap.release()
 
