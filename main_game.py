@@ -24,7 +24,7 @@ audio_process = None
 game_mode = "AUDIO" # Default mode
 
 def audio_thread_function():
-    global mic_bpm, current_volume
+    global mic_bpm, current_volume, game_mode
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
     RATE = 22050
@@ -44,8 +44,11 @@ def audio_thread_function():
 
             o_env = onset_strength(y=audio_data, sr=RATE)
             peak_intensity = np.max(o_env)
+            
+            # Base mic sensitivity
+            threshold = 2.5 
              
-            if peak_intensity > 2.5: 
+            if peak_intensity > threshold: 
                 now = time.time()
                 if (now - last_onset) > 0.25:
                     if last_onset > 0:
@@ -99,7 +102,6 @@ def analyze_game():
             cap = cv2.VideoCapture(video_path)
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             
-            # Movement Tracking Variables
             match_streak = 0 
             STREAK_THRESHOLD = 90
             last_check_time = time.time()
@@ -130,20 +132,20 @@ def analyze_game():
                     t, _ = librosa.beat.beat_track(onset_envelope=window, sr=sr)
                     video_audio_bpm = int(t[0]) if isinstance(t, np.ndarray) else int(t)
 
-                # 2. MOVEMENT BPM ANALYSIS (MediaPipe)
+                # 2. MOVEMENT BPM ANALYSIS
                 if int(curr_frame) % 2 == 0:
                     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
                     res = landmarker.detect_for_video(mp_image, global_timestamp_ms)
                     if res.pose_landmarks:
-                        n = res.pose_landmarks[0][0] # Nose landmark
+                        n = res.pose_landmarks[0][0]
                         curr_y = n.y
                         cv2.circle(frame, (int(n.x*w), int(n.y*h)), 8, (0,0,255), -1)
                         
                         if prev_y is not None:
                             velocity = abs(curr_y - prev_y)
-                            if velocity > 0.01: # Threshold for a significant movement
+                            if velocity > 0.01:
                                 now = time.time()
-                                if (now - last_move_peak) > 0.3: # Debounce
+                                if (now - last_move_peak) > 0.3:
                                     diff = now - last_move_peak
                                     if 0.3 < diff < 1.5:
                                         move_intervals.append(diff)
@@ -152,8 +154,13 @@ def analyze_game():
                                     last_move_peak = now
                         prev_y = curr_y
 
-                # 3. SELECT TARGET BPM BASED ON MODE
-                target_bpm = video_audio_bpm if game_mode == "AUDIO" else movement_bpm
+                # 3. SELECT & MODIFY TARGET BPM
+                if game_mode == "AUDIO":
+                    target_bpm = video_audio_bpm
+                else:
+                    # HIGHER BPM MODIFIER: Increase the movement BPM by 10% or a flat 10
+                    # This makes the "Target" faster when tracking the dancer
+                    target_bpm = movement_bpm + 10 
 
                 # 4. EVALUATE MATCH (Every 2 seconds)
                 current_time = time.time()
@@ -161,7 +168,7 @@ def analyze_game():
                     is_matching = (abs(target_bpm - mic_bpm) <= 20 and target_bpm > 0)
                     last_check_time = current_time
 
-                # 5. UPDATE STREAK & EFFECTS
+                # 5. RENDER EFFECTS
                 if is_matching:
                     match_streak = min(match_streak + 1, 150)
                 else:
