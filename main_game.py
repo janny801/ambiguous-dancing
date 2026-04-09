@@ -22,7 +22,6 @@ global_timestamp_ms = 0
 audio_process = None # To track the afplay process
 
 def audio_thread_function():
-    """Background thread for Microphone input."""
     global mic_bpm, current_volume
     FORMAT = pyaudio.paFloat32
     CHANNELS = 1
@@ -38,22 +37,41 @@ def audio_thread_function():
         while True:
             data = stream.read(CHUNK, exception_on_overflow=False)
             audio_data = np.frombuffer(data, dtype=np.float32)
-            rms = np.sqrt(np.mean(audio_data**2))
-            current_volume = min(1.0, rms * 15) 
             
+            # 1. Volume visualization scaling
+            rms = np.sqrt(np.mean(audio_data**2))
+            current_volume = min(1.0, rms * 12) 
+
+            # 2. Onset Detection
             o_env = onset_strength(y=audio_data, sr=RATE)
-            if np.max(o_env) > 2.5:
+            peak_intensity = np.max(o_env)
+            
+            # ADJUST THIS: 3.5 is a middle ground. 
+            # If still 0, try 3.0. If still too high, try 4.0.
+            if peak_intensity > 3.0: 
                 now = time.time()
-                if last_onset > 0:
-                    diff = now - last_onset
-                    if 0.3 < diff < 1.5:
-                        intervals.append(diff)
-                        if len(intervals) > 5: intervals.pop(0)
-                        mic_bpm = int(60 / np.mean(intervals))
-                last_onset = now
-            if time.time() - last_onset > 2.0: mic_bpm = 0
+                
+                # Debounce: Ignore sounds that happen within 0.25s of each other
+                # (prevents one clap from being counted twice)
+                if (now - last_onset) > 0.25:
+                    if last_onset > 0:
+                        diff = now - last_onset
+                        # Standard human rhythm window (40 to 200 BPM)
+                        if 0.3 < diff < 1.5:
+                            intervals.append(diff)
+                            if len(intervals) > 5: intervals.pop(0)
+                            mic_bpm = int(60 / np.mean(intervals))
+                    
+                    last_onset = now
+            
+            # Reset if quiet for 2 seconds
+            if time.time() - last_onset > 2.0:
+                mic_bpm = 0
+                intervals = []
+                
     except: pass
     finally: p.terminate()
+
 
 def stop_audio():
     """Stops the current macOS audio process."""
